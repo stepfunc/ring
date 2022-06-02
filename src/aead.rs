@@ -29,7 +29,7 @@ use core::{
 
 pub use self::{
     aes_gcm::{AES_128_GCM, AES_256_GCM},
-    ccm::AES_128_CCM,
+    aes_ccm::AES_128_CCM,
     chacha20_poly1305::CHACHA20_POLY1305,
     less_safe_key::LessSafeKey,
     nonce::{Nonce, NONCE_LEN},
@@ -245,7 +245,7 @@ mod block;
 mod chacha;
 mod chacha20_poly1305;
 pub mod chacha20_poly1305_openssh;
-mod ccm;
+mod aes_ccm;
 mod gcm;
 mod less_safe_key;
 mod nonce;

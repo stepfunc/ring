@@ -234,8 +234,8 @@ impl<'a> Iterator for PaddedBlocks<'a> {
 }
 
 
-/// If aad is non-empty, return the first aad block and any remaining aad as a block iterator
-fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<(Block, PaddedBlocks)> {
+/// If aad is non-empty return an iterator over the AD blocks
+fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<impl Iterator<Item = Block> + '_> {
     if aad.0.is_empty() {
         return None;
     }
@@ -265,14 +265,12 @@ fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<(Block, PaddedBlocks)> {
     // how much space do we have left in B0?
     let block_unused_bytes = BLOCK_LEN - num_length_bytes;
 
-    // split the aad data based on what can fit in B0 and the remainder
+    // put as much as we can of the AD in B0
     let aad_b0_len = aad.0.len().min(block_unused_bytes);
     let (b0_ad_bytes, remainder) = aad.0.split_at(aad_b0_len);
-
     block[num_length_bytes..num_length_bytes+aad_b0_len].copy_from_slice(b0_ad_bytes);
 
-    // the remainder of aad that wasn't part of B0 becomes a block iterator
-    Some((Block::from(&block), PaddedBlocks::new(remainder)))
+    Some(std::iter::once(Block::from(&block)).chain(PaddedBlocks::new(remainder)))
 }
 
 fn calc_auth_tag(key: crate::aead::aes::Key, nonce: &Nonce, aad: Aad<&[u8]>, input: &[u8]) -> Block {
@@ -282,9 +280,8 @@ fn calc_auth_tag(key: crate::aead::aes::Key, nonce: &Nonce, aad: Aad<&[u8]>, inp
     mac.update(calc_block_0(nonce, aad, input));
 
     // optional AAD blocks
-    if let Some((block, rem)) = prepare_aad_blocks(aad) {
-        mac.update(block);
-        for b in rem {
+    if let Some(blocks) = prepare_aad_blocks(aad) {
+        for b in blocks {
             mac.update(b);
         }
     }
@@ -300,8 +297,8 @@ fn calc_auth_tag(key: crate::aead::aes::Key, nonce: &Nonce, aad: Aad<&[u8]>, inp
 #[cfg(test)]
 mod test {
     use crate::aead::aes::Variant;
-    use crate::aead::ccm::aes_128_ccm_seal;
-    use crate::aead::{Aad, AES_128_CCM, KeyInner, Nonce};
+    use crate::aead::aes_ccm::aes_128_ccm_seal;
+    use crate::aead::{Aad, KeyInner, Nonce};
     use crate::cpu::features;
 
     #[test]
