@@ -13,11 +13,11 @@
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-use core::slice::ChunksExact;
-use std::ops::RangeFrom;
-use crate::aead::{Aad, KeyInner, Nonce, Tag};
 use crate::aead::aes::Variant;
 use crate::aead::block::{Block, BLOCK_LEN};
+use crate::aead::{Aad, KeyInner, Nonce, Tag};
+use core::slice::ChunksExact;
+use std::ops::RangeFrom;
 
 const KEY_LEN: usize = BLOCK_LEN;
 
@@ -43,7 +43,10 @@ pub static AES_128_CCM: crate::aead::Algorithm = crate::aead::Algorithm {
     max_input_len: MAX_MESSAGE_LENGTH_PER_NONCE,
 };
 
-fn aes_128_ccm_init(key: &[u8], cpu_features: crate::cpu::Features) -> Result<KeyInner, crate::error::Unspecified> {
+fn aes_128_ccm_init(
+    key: &[u8],
+    cpu_features: crate::cpu::Features,
+) -> Result<KeyInner, crate::error::Unspecified> {
     crate::aead::aes::Key::new(key, Variant::AES_128, cpu_features).map(|k| KeyInner::AesCcm(k))
 }
 
@@ -55,7 +58,7 @@ fn aes_128_ccm_seal(key: &KeyInner, nonce: Nonce, aad: Aad<&[u8]>, in_out: &mut 
 
     let tag = calc_auth_tag(key.clone(), &nonce, aad, in_out);
 
-    let mut stream = BlockStream::new(key.clone(), nonce);
+    let mut stream = BlockStream::new(key.clone(), &nonce);
 
     let tag = tag ^ stream.next_block();
 
@@ -65,22 +68,41 @@ fn aes_128_ccm_seal(key: &KeyInner, nonce: Nonce, aad: Aad<&[u8]>, in_out: &mut 
 }
 
 fn aes_128_ccm_open(
-    _key: &KeyInner,
-    _nonce: Nonce,
-    _aad: Aad<&[u8]>,
-    _in_out: &mut [u8],
-    _src: RangeFrom<usize>,
+    key: &KeyInner,
+    nonce: Nonce,
+    aad: Aad<&[u8]>,
+    in_out: &mut [u8],
+    src: RangeFrom<usize>,
 ) -> Tag {
-    unimplemented!()
-}
+    //  length of the ciphertext (and plaintext)
+    let ct_len = in_out.len() - src.start;
 
+    let key = match key {
+        KeyInner::AesCcm(x) => x,
+        _ => unreachable!(),
+    };
+
+    let mut stream = BlockStream::new(key.clone(), &nonce);
+
+    // save this for after we calculate the tag
+    let tag_block = stream.next_block();
+
+    stream.apply(&mut in_out[src.clone()]);
+
+    // shift the plaintext to the start of in_out
+    in_out.copy_within(src, 0);
+
+    // calculate the tag over the plaintext
+    let tag = calc_auth_tag(key.clone(), &nonce, aad, &in_out[..ct_len]) ^ tag_block;
+
+    Tag::from(tag.as_ref().clone())
+}
 
 /// This limit is set by a 3-byte length encoding when calculating the
 /// authentication tag.
 ///
 /// 2^24 - 1
 const MAX_MESSAGE_LENGTH_PER_NONCE: u64 = 16777215;
-
 
 /// The auth flags
 ///
@@ -98,7 +120,7 @@ impl AesCbcMac {
     fn new(key: crate::aead::aes::Key) -> Self {
         Self {
             state: Block::zero(),
-            key
+            key,
         }
     }
 
@@ -121,7 +143,7 @@ struct BlockStream {
 }
 
 impl BlockStream {
-    fn new(key: crate::aead::aes::Key, nonce: Nonce) -> Self {
+    fn new(key: crate::aead::aes::Key, nonce: &Nonce) -> Self {
         let mut state = [0; BLOCK_LEN];
 
         state[0] = 2; // Flags = L' = L - 1
@@ -132,11 +154,11 @@ impl BlockStream {
         Self {
             counter: 0,
             key,
-            state
+            state,
         }
     }
 
-    /// apply yhe key stream to the input bytes using 0-padding
+    /// apply the key stream to the input bytes using 0-padding
     fn apply(&mut self, in_out: &mut [u8]) {
         for chunk in in_out.chunks_mut(BLOCK_LEN) {
             // more efficient way to do this?
@@ -204,7 +226,7 @@ impl<'a> PaddedBlocks<'a> {
         };
         Self {
             chunks: exact,
-            remainder
+            remainder,
         }
     }
 }
@@ -214,16 +236,14 @@ impl<'a> Iterator for PaddedBlocks<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.chunks.next() {
-            None => {
-                match self.remainder.take() {
-                    None => None,
-                    Some(x) => {
-                        let mut block: [u8; BLOCK_LEN] = [0; BLOCK_LEN];
-                        block[0..x.len()].copy_from_slice(x);
-                        Some(Block::from(&block))
-                    }
+            None => match self.remainder.take() {
+                None => None,
+                Some(x) => {
+                    let mut block: [u8; BLOCK_LEN] = [0; BLOCK_LEN];
+                    block[0..x.len()].copy_from_slice(x);
+                    Some(Block::from(&block))
                 }
-            }
+            },
             Some(x) => {
                 let mut block: [u8; BLOCK_LEN] = [0; BLOCK_LEN];
                 block.copy_from_slice(x);
@@ -232,7 +252,6 @@ impl<'a> Iterator for PaddedBlocks<'a> {
         }
     }
 }
-
 
 /// If aad is non-empty return an iterator over the AD blocks
 fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<impl Iterator<Item = Block> + '_> {
@@ -246,16 +265,18 @@ fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<impl Iterator<Item = Block> + '
 
     // copy the length representation into the block and get the
     // number of bytes in the representation
-    let num_length_bytes: usize = if aad.0.len() < 65280 { // < 2^16 - 2^8
+    let num_length_bytes: usize = if aad.0.len() < 65280 {
+        // < 2^16 - 2^8
         block[0..2].copy_from_slice(&be_bytes[6..]);
         2
-    }
-    else if aad.0.len() < 4294967296 { // < 2^32
+    } else if aad.0.len() < 4294967296 {
+        // < 2^32
         block[0] = 0xFF;
         block[1] = 0xFE;
         block[2..6].copy_from_slice(&be_bytes[4..]);
         6
-    } else { // otherwise it's the < 2^64 case
+    } else {
+        // otherwise it's the < 2^64 case
         block[0] = 0xFF;
         block[1] = 0xFF;
         block[2..10].copy_from_slice(&be_bytes);
@@ -268,12 +289,17 @@ fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<impl Iterator<Item = Block> + '
     // put as much as we can of the AD in B0
     let aad_b0_len = aad.0.len().min(block_unused_bytes);
     let (b0_ad_bytes, remainder) = aad.0.split_at(aad_b0_len);
-    block[num_length_bytes..num_length_bytes+aad_b0_len].copy_from_slice(b0_ad_bytes);
+    block[num_length_bytes..num_length_bytes + aad_b0_len].copy_from_slice(b0_ad_bytes);
 
     Some(std::iter::once(Block::from(&block)).chain(PaddedBlocks::new(remainder)))
 }
 
-fn calc_auth_tag(key: crate::aead::aes::Key, nonce: &Nonce, aad: Aad<&[u8]>, input: &[u8]) -> Block {
+fn calc_auth_tag(
+    key: crate::aead::aes::Key,
+    nonce: &Nonce,
+    aad: Aad<&[u8]>,
+    input: &[u8],
+) -> Block {
     let mut mac = AesCbcMac::new(key);
 
     // setup and mac the first block
@@ -292,34 +318,4 @@ fn calc_auth_tag(key: crate::aead::aes::Key, nonce: &Nonce, aad: Aad<&[u8]>, inp
     }
 
     mac.finalize()
-}
-
-#[cfg(test)]
-mod test {
-    use crate::aead::aes::Variant;
-    use crate::aead::aes_ccm::aes_128_ccm_seal;
-    use crate::aead::{Aad, KeyInner, Nonce};
-    use crate::cpu::features;
-
-    #[test]
-    fn test_seal() {
-
-        let key: [u8; 16] = [0x00; 16];
-
-        println!("key: {:02X?}", key.as_slice());
-
-        let key : KeyInner = KeyInner::AesCcm(crate::aead::aes::Key::new(&key, Variant::AES_128, features()).unwrap());
-
-        let ad : [u8; 4] = [0x01, 0x02, 0x03, 0x04];
-        let mut input: [u8; 32] = [0x01; 32];
-        let nonce = Nonce::assume_unique_for_key([0; 12]);
-
-        println!("nonce: {:02X?}", nonce.as_ref());
-        println!("ad: {:02X?}", ad.as_slice());
-        println!("input: {:02X?}", input.as_slice());
-
-        let tag = aes_128_ccm_seal(&key, nonce, Aad(&ad), input.as_mut());
-        println!("tag: {:02X?}", tag.as_ref());
-        println!("ciphertext: {:02X?}", input.as_ref());
-    }
 }
