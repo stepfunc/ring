@@ -17,7 +17,7 @@ use crate::aead::aes::Variant;
 use crate::aead::block::{Block, BLOCK_LEN};
 use crate::aead::{Aad, KeyInner, Nonce, Tag};
 use core::slice::ChunksExact;
-use std::ops::RangeFrom;
+use std::ops::{Range, RangeFrom};
 
 const KEY_LEN: usize = BLOCK_LEN;
 
@@ -62,7 +62,7 @@ fn aes_128_ccm_seal(key: &KeyInner, nonce: Nonce, aad: Aad<&[u8]>, in_out: &mut 
 
     let tag = tag ^ stream.next_block();
 
-    stream.apply(in_out);
+    stream.apply(in_out, 0..);
 
     Tag::from(tag.as_ref().clone())
 }
@@ -87,10 +87,7 @@ fn aes_128_ccm_open(
     // save this for after we calculate the tag
     let tag_block = stream.next_block();
 
-    stream.apply(&mut in_out[src.clone()]);
-
-    // shift the plaintext to the start of in_out
-    in_out.copy_within(src, 0);
+    stream.apply(in_out, src);
 
     // calculate the tag over the plaintext
     let tag = calc_auth_tag(key.clone(), &nonce, aad, &in_out[..ct_len]) ^ tag_block;
@@ -135,6 +132,38 @@ impl AesCbcMac {
     }
 }
 
+struct Ranges {
+    pos: usize,
+    end: usize,
+    chunk_size: usize,
+}
+
+impl Iterator for Ranges {
+    type Item = Range<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let rem = self.end.checked_sub(self.pos)?;
+        if rem == 0 {
+            return None;
+        }
+
+        let chunk_len = rem.min(self.chunk_size);
+        let ret = self.pos..self.pos+chunk_len;
+        self.pos += chunk_len;
+        Some(ret)
+    }
+}
+
+fn ranges(start: usize, end: usize, chunk_size: usize) -> impl Iterator<Item = (Range<usize>, Range<usize>)> {
+    let ranges = Ranges {
+        pos: start,
+        end,
+        chunk_size
+    };
+
+    ranges.map(move |x| (x.clone(), x.start-start..x.end-start))
+}
+
 /// block stream for encryption
 struct BlockStream {
     counter: u32,
@@ -158,14 +187,15 @@ impl BlockStream {
         }
     }
 
-    /// apply the key stream to the input bytes using 0-padding
-    fn apply(&mut self, in_out: &mut [u8]) {
-        for chunk in in_out.chunks_mut(BLOCK_LEN) {
-            // more efficient way to do this?
+    /// `src` has the same meaning as elsewhere in the aead module, namely
+    /// it allows us to perform a shift when we decrypt to the front of `in_out`.
+    fn apply(&mut self, in_out: &mut [u8], src: RangeFrom<usize>) {
+        for (src, dest) in ranges(src.start, in_out.len(), BLOCK_LEN) {
+            let len = ..src.len();
             let mut block: [u8; BLOCK_LEN] = [0; BLOCK_LEN];
-            block[..chunk.len()].copy_from_slice(chunk);
+            block[..len].copy_from_slice(&in_out[src.clone()]);
             let encrypted = Block::from(&block) ^ self.next_block();
-            chunk.copy_from_slice(&encrypted.as_ref()[..chunk.len()]);
+            in_out[dest].copy_from_slice(&encrypted.as_ref()[..len]);
         }
     }
 
@@ -253,7 +283,7 @@ impl<'a> Iterator for PaddedBlocks<'a> {
     }
 }
 
-/// If aad is non-empty return an iterator over the AD blocks
+/// If aad is non-empty, return an iterator over the AD blocks
 fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<impl Iterator<Item = Block> + '_> {
     if aad.0.is_empty() {
         return None;
@@ -318,4 +348,28 @@ fn calc_auth_tag(
     }
 
     mac.finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::aead::aes_ccm::ranges;
+
+    #[test]
+    fn range_iterator_full_chunks() {
+        let mut ranges = ranges(0, 6,3);
+
+        assert_eq!(ranges.next(), Some((0..3, 0..3)));
+        assert_eq!(ranges.next(), Some((3..6, 3..6)));
+        assert_eq!(ranges.next(), None);
+    }
+
+    #[test]
+    fn range_iterator_partial_chunk() {
+        let mut ranges = ranges(2, 10,3);
+
+        assert_eq!(ranges.next(), Some((2..5, 0..3)));
+        assert_eq!(ranges.next(), Some((5..8, 3..6)));
+        assert_eq!(ranges.next(), Some((8..9, 6..7)));
+        assert_eq!(ranges.next(), None);
+    }
 }
