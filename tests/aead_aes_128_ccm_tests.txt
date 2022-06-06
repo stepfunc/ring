@@ -1,3 +1,18 @@
+# The relevant RFCs lack test vectors for the parameters M=16, L=3
+#
+# These test vectors were generated using RustCrypto-CCM:
+#
+#  https://crates.io/crates/ccm
+#
+# This implementation is generic on M/L. It is tested using all the test vectors in the
+# RFCs + additional test vectors from NIST CAVP:
+#
+# https://csrc.nist.gov/projects/cryptographic-algorithm-validation-program
+#
+#
+# The test vectors are all permutations of input parameters with lengths
+# at block boundary lengths.
+
 KEY = 00000000000000000000000000000000
 NONCE = 000000000000000000000000
 IN = ""

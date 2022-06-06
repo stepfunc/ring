@@ -17,11 +17,11 @@ use crate::aead::aes::Variant;
 use crate::aead::block::{Block, BLOCK_LEN};
 use crate::aead::{Aad, KeyInner, Nonce, Tag};
 use core::slice::ChunksExact;
-use std::ops::{Range, RangeFrom};
+use core::ops::{Range, RangeFrom};
 
 const KEY_LEN: usize = 16;
 
-/// AES-128 in CCM mode as described in [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116#section-5.3)
+/// AES-128 in CCM mode as described in [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116#section-5.3).
 ///
 /// Generic CCM is described in both:
 /// - [RFC 3610](https://datatracker.ietf.org/doc/html/rfc3610)
@@ -320,7 +320,7 @@ fn prepare_aad_blocks(aad: Aad<&[u8]>) -> Option<impl Iterator<Item = Block> + '
     let (b0_ad_bytes, remainder) = aad.0.split_at(aad_b0_len);
     block[num_length_bytes..num_length_bytes + aad_b0_len].copy_from_slice(b0_ad_bytes);
 
-    Some(std::iter::once(Block::from(&block)).chain(PaddedBlocks::new(remainder)))
+    Some(core::iter::once(Block::from(&block)).chain(PaddedBlocks::new(remainder)))
 }
 
 fn calc_auth_tag(
