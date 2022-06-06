@@ -191,11 +191,10 @@ impl BlockStream {
     /// it allows us to perform a shift when we decrypt to the front of `in_out`.
     fn apply(&mut self, in_out: &mut [u8], src: RangeFrom<usize>) {
         for (src, dest) in ranges(src.start, in_out.len(), BLOCK_LEN) {
-            let len = ..src.len();
             let mut block: [u8; BLOCK_LEN] = [0; BLOCK_LEN];
-            block[..len].copy_from_slice(&in_out[src.clone()]);
+            block[..src.len()].copy_from_slice(&in_out[src.clone()]);
             let encrypted = Block::from(&block) ^ self.next_block();
-            in_out[dest].copy_from_slice(&encrypted.as_ref()[..len]);
+            in_out[dest].copy_from_slice(&encrypted.as_ref()[..src.len()]);
         }
     }
 
@@ -369,7 +368,7 @@ mod tests {
 
         assert_eq!(ranges.next(), Some((2..5, 0..3)));
         assert_eq!(ranges.next(), Some((5..8, 3..6)));
-        assert_eq!(ranges.next(), Some((8..9, 6..7)));
+        assert_eq!(ranges.next(), Some((8..10, 6..8)));
         assert_eq!(ranges.next(), None);
     }
 }
