@@ -19,7 +19,7 @@ use crate::aead::{Aad, KeyInner, Nonce, Tag};
 use core::slice::ChunksExact;
 use std::ops::{Range, RangeFrom};
 
-const KEY_LEN: usize = BLOCK_LEN;
+const KEY_LEN: usize = 16;
 
 /// AES-128 in CCM mode as described in [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116#section-5.3)
 ///
